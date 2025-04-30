@@ -1,4 +1,4 @@
-module github.com/mholt/caddy-webdav
+module github.com/zystem/caddy-webdav
 
 go 1.21
 
@@ -97,6 +97,7 @@ require (
 	go.uber.org/multierr v1.6.0 // indirect
 	golang.org/x/crypto v0.27.0 // indirect
 	golang.org/x/mod v0.17.0 // indirect
+	golang.org/x/sync v0.8.0 // indirect
 	golang.org/x/sys v0.25.0 // indirect
 	golang.org/x/term v0.24.0 // indirect
 	golang.org/x/text v0.18.0 // indirect

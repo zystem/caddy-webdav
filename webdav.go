@@ -22,6 +22,9 @@ import (
 	"errors"
 	"io/fs"
 	"net/http"
+	"os"
+	"path/filepath"
+	"strings"
 
 	"github.com/caddyserver/caddy/v2"
 	"github.com/caddyserver/caddy/v2/caddyconfig/caddyfile"
@@ -137,6 +140,27 @@ func (wd WebDAV) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyhtt
 
 	if r.Method == http.MethodHead {
 		w = emptyBodyResponseWriter{w}
+	}
+
+	// Auto-create parent directories on PUT
+	if r.Method == http.MethodPut {
+		// Strip prefix to get the filesystem path
+		relPath := r.URL.Path
+		if prefix != "" && len(relPath) >= len(prefix) && relPath[:len(prefix)] == prefix {
+			relPath = relPath[len(prefix):]
+		}
+		// Ensure it doesn't start with /
+		relPath = strings.TrimLeft(relPath, "/")
+
+		// Join root + relative path
+		fullPath := filepath.Join(root, relPath)
+		parentDir := filepath.Dir(fullPath)
+
+		if err := os.MkdirAll(parentDir, 0755); err != nil {
+			wd.logger.Error("failed to auto-create parent directory", zap.Error(err))
+			http.Error(w, "Failed to create directories", http.StatusInternalServerError)
+			return nil
+		}
 	}
 
 	wdHandler.ServeHTTP(w, r)
