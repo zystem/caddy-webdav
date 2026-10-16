@@ -435,3 +435,50 @@ func TestPutChecksTheAnnouncedHash(t *testing.T) {
 		t.Fatalf("no hash in the answer: %v", w.Header())
 	}
 }
+
+func TestHashOfAnObject(t *testing.T) {
+	root, _, do := newHandler(t, atomic, createDirs)
+	data := []byte(strings.Repeat("payload ", 1000))
+	do("PUT", "/h/obj", bytes.NewReader(data))
+	w := do("GET", "/h/obj?sha256", nil)
+	if w.Code != 200 || w.Header().Get(hashHeader) != shaOf(data) || strings.TrimSpace(w.Body.String()) != shaOf(data) {
+		t.Fatalf("get: %d %v %q", w.Code, w.Header(), w.Body.String())
+	}
+	w = do("HEAD", "/h/obj?sha256", nil)
+	if w.Code != 200 || w.Header().Get(hashHeader) != shaOf(data) || w.Body.Len() != 0 {
+		t.Fatalf("head: %d %v", w.Code, w.Header())
+	}
+	// the file is changed behind the module's back (a longer one, so that the size differs): the hash is taken again, not the one that was kept
+	other := []byte("changed outside, and longer than before")
+	if err := os.WriteFile(filepath.Join(root, "h/obj"), other, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if w := do("GET", "/h/obj?sha256", nil); w.Header().Get(hashHeader) != shaOf(other) {
+		t.Fatalf("stale hash: %v", w.Header())
+	}
+	if w := do("GET", "/h/none?sha256", nil); w.Code != http.StatusNotFound {
+		t.Fatalf("missing: %d", w.Code)
+	}
+	if w := do("GET", "/h?sha256", nil); w.Code != http.StatusNotFound {
+		t.Fatalf("a collection: %d", w.Code)
+	}
+	if w := do("GET", "/.tmp/x?sha256", nil); w.Code != http.StatusNotFound {
+		t.Fatalf("hash of tmp: %d", w.Code)
+	}
+	if w := do("GET", "/h/obj", nil); w.Code != http.StatusOK || w.Body.String() != string(other) {
+		t.Fatalf("a GET without the query is the module's own: %d %q", w.Code, w.Body.String())
+	}
+}
+
+func TestTheHashIsKeptInAnAttributeWhenTheFileSystemHasThem(t *testing.T) {
+	root, _, do := newHandler(t, atomic, createDirs)
+	data := []byte("kept")
+	do("PUT", "/kept", bytes.NewReader(data))
+	v, ok := getAttr(filepath.Join(root, "kept"), hashAttr)
+	if !ok {
+		t.Skip("no extended attributes on this file system: the hash is taken again at every request")
+	}
+	if !strings.HasPrefix(v, shaOf(data)+":4:") {
+		t.Fatalf("attribute %q", v)
+	}
+}

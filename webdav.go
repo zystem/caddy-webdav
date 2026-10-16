@@ -149,6 +149,13 @@ func (wd WebDAV) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyhtt
 		},
 	}
 
+	if wd.AtomicPut && (r.Method == http.MethodGet || r.Method == http.MethodHead) && r.URL.Query().Has("sha256") {
+		if rel, _, ok := resolve(root, prefix, r.URL.Path); !ok || !wd.insideTmp(rel) {
+			wd.hashOf(w, r, root, prefix)
+			return nil
+		}
+	}
+
 	// Excerpt from RFC4918, section 9.4:
 	//
 	//     GET, when applied to a collection, may return the contents of an

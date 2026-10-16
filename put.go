@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -26,6 +27,9 @@ import (
 //
 // A client that sends the SHA-256 of what it sends in `X-Content-SHA256` has it checked while the body is written: on a mismatch (422) nothing is placed. The answer carries
 // the SHA-256 of what was written in the same header.
+//
+// `GET` and `HEAD` with the query `sha256` answer the SHA-256 of an object in the header `X-Content-SHA256` (and in the body of a GET), from an extended attribute that holds it
+// together with the size and the time of the file it was taken from, and is taken again when they differ.
 
 const (
 	syncFull = "full" // the file and then its directory are flushed before the answer: a write that was answered survives a power cut
@@ -34,6 +38,7 @@ const (
 
 	copyBuffer = 1 << 20
 	hashHeader = "X-Content-SHA256"
+	hashAttr   = "user.cinim.sha256"
 )
 
 var bufPool = sync.Pool{New: func() any { b := make([]byte, copyBuffer); return &b }}
@@ -277,6 +282,9 @@ func (wd *WebDAV) put(w http.ResponseWriter, r *http.Request, root, prefix strin
 	if wd.syncMode() == syncFull {
 		fsyncDir(dir)
 	}
+	if st, err := os.Stat(full); err == nil {
+		storeHash(full, sum, st)
+	}
 	w.Header().Set(hashHeader, sum)
 	w.Header().Set("Content-Length", "0")
 	if existed {
@@ -284,4 +292,64 @@ func (wd *WebDAV) put(w http.ResponseWriter, r *http.Request, root, prefix strin
 	} else {
 		w.WriteHeader(http.StatusCreated)
 	}
+}
+
+// hashOf answers the SHA-256 of an object (GET or HEAD with the query `sha256`)
+func (wd *WebDAV) hashOf(w http.ResponseWriter, r *http.Request, root, prefix string) {
+	rel, full, ok := resolve(root, prefix, r.URL.Path)
+	if !ok || wd.insideTmp(rel) {
+		http.Error(w, "not found", http.StatusNotFound)
+		return
+	}
+	st, err := os.Stat(full)
+	if err != nil || !st.Mode().IsRegular() {
+		http.Error(w, "not found", http.StatusNotFound)
+		return
+	}
+	sum, ok := cachedHash(full, st)
+	if !ok {
+		f, err := os.Open(full)
+		if err != nil {
+			http.Error(w, "not found", http.StatusNotFound)
+			return
+		}
+		h := sha256.New()
+		bp := bufPool.Get().(*[]byte)
+		_, err = io.CopyBuffer(h, f, *bp)
+		bufPool.Put(bp)
+		_ = f.Close()
+		if err != nil {
+			http.Error(w, "storage error", http.StatusInternalServerError)
+			return
+		}
+		sum = hex.EncodeToString(h.Sum(nil))
+		if st2, err := os.Stat(full); err == nil && st2.Size() == st.Size() && st2.ModTime().Equal(st.ModTime()) {
+			storeHash(full, sum, st)
+		}
+	}
+	w.Header().Set(hashHeader, sum)
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.Header().Set("Content-Length", strconv.Itoa(len(sum)+1))
+	w.WriteHeader(http.StatusOK)
+	if r.Method == http.MethodGet {
+		_, _ = io.WriteString(w, sum+"\n")
+	}
+}
+
+func attrValue(sum string, st os.FileInfo) string {
+	return sum + ":" + strconv.FormatInt(st.Size(), 10) + ":" + strconv.FormatInt(st.ModTime().UnixNano(), 10)
+}
+
+func storeHash(file, sum string, st os.FileInfo) { setAttr(file, hashAttr, attrValue(sum, st)) }
+
+func cachedHash(file string, st os.FileInfo) (string, bool) {
+	v, ok := getAttr(file, hashAttr)
+	if !ok {
+		return "", false
+	}
+	i := strings.IndexByte(v, ':')
+	if i != 64 || attrValue(v[:i], st) != v {
+		return "", false
+	}
+	return v[:i], true
 }

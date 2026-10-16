@@ -135,3 +135,17 @@ writers of one name exactly one wins.
 A client that sends the SHA-256 of its body in `X-Content-SHA256` (64 hexadecimal digits) has it checked while the body is written; on a mismatch the answer is 422 and nothing
 is placed. The answer of an atomic `PUT` carries the SHA-256 of what was written in the same header.
 
+`GET` and `HEAD` with the query `sha256` answer the SHA-256 of an object in `X-Content-SHA256` (and in the body of a `GET`) without sending the object. The module has to see
+such a request, so give it its own matcher:
+
+```
+@hash query sha256=*
+webdav @hash {
+    root /data
+    atomic_put
+}
+```
+
+The hash is kept in the extended attribute `user.cinim.sha256` together with the size and the modification time of the file it was taken from, and is taken again when they
+differ (or when the file system has no extended attributes).
+
