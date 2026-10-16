@@ -2,6 +2,7 @@ package webdav
 
 import (
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"io"
@@ -22,6 +23,9 @@ import (
 // A path that leads into `tmp_dir` is not found, for every method.
 //
 // `If-None-Match: *` makes the PUT create-only (412 when the object is there); the check and the creation are one operation (a hard link), not two.
+//
+// A client that sends the SHA-256 of what it sends in `X-Content-SHA256` has it checked while the body is written: on a mismatch (422) nothing is placed. The answer carries
+// the SHA-256 of what was written in the same header.
 
 const (
 	syncFull = "full" // the file and then its directory are flushed before the answer: a write that was answered survives a power cut
@@ -29,6 +33,7 @@ const (
 	syncNone = "none" // nothing: the page cache decides
 
 	copyBuffer = 1 << 20
+	hashHeader = "X-Content-SHA256"
 )
 
 var bufPool = sync.Pool{New: func() any { b := make([]byte, copyBuffer); return &b }}
@@ -65,6 +70,18 @@ func fsyncDir(dir string) {
 		_ = d.Sync()
 		_ = d.Close()
 	}
+}
+
+func validHex(s string) bool {
+	if len(s) != 64 {
+		return false
+	}
+	for _, c := range s {
+		if !(c >= '0' && c <= '9' || c >= 'a' && c <= 'f') {
+			return false
+		}
+	}
+	return true
 }
 
 // sweepTmp removes the files in `dir` older than `tmp_age`, at most once an hour for a directory. The directories that have been swept are remembered for that hour in a table of
@@ -143,6 +160,11 @@ func (wd *WebDAV) put(w http.ResponseWriter, r *http.Request, root, prefix strin
 		http.Error(w, "a PUT with Content-Range is not supported", http.StatusNotImplemented)
 		return
 	}
+	announced := strings.ToLower(strings.TrimSpace(r.Header.Get(hashHeader)))
+	if announced != "" && !validHex(announced) {
+		http.Error(w, hashHeader+" is 64 hexadecimal digits", http.StatusBadRequest)
+		return
+	}
 	createOnly := strings.TrimSpace(r.Header.Get("If-None-Match")) == "*"
 	existed := false
 	if st, err := os.Lstat(full); err == nil {
@@ -182,7 +204,8 @@ func (wd *WebDAV) put(w http.ResponseWriter, r *http.Request, root, prefix strin
 	}()
 
 	bp := bufPool.Get().(*[]byte)
-	n, err := io.CopyBuffer(f, r.Body, *bp)
+	h := sha256.New()
+	n, err := io.CopyBuffer(io.MultiWriter(f, h), r.Body, *bp)
 	bufPool.Put(bp)
 	if err != nil {
 		switch {
@@ -196,6 +219,11 @@ func (wd *WebDAV) put(w http.ResponseWriter, r *http.Request, root, prefix strin
 	}
 	if r.ContentLength >= 0 && n != r.ContentLength {
 		http.Error(w, "the body is shorter than Content-Length", http.StatusBadRequest)
+		return
+	}
+	sum := hex.EncodeToString(h.Sum(nil))
+	if announced != "" && announced != sum {
+		http.Error(w, hashHeader+" does not match the body (got "+sum+")", http.StatusUnprocessableEntity)
 		return
 	}
 	if wd.syncMode() != syncNone {
@@ -249,6 +277,7 @@ func (wd *WebDAV) put(w http.ResponseWriter, r *http.Request, root, prefix strin
 	if wd.syncMode() == syncFull {
 		fsyncDir(dir)
 	}
+	w.Header().Set(hashHeader, sum)
 	w.Header().Set("Content-Length", "0")
 	if existed {
 		w.WriteHeader(http.StatusNoContent)

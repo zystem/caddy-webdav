@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"io"
 	"net/http"
@@ -400,5 +402,36 @@ func TestCreateOnlyPutHasOneWinner(t *testing.T) {
 	}
 	if n := tmpEntries(t, root); n != 0 {
 		t.Fatalf("%d leftovers in tmp", n)
+	}
+}
+
+func shaOf(b []byte) string { s := sha256.Sum256(b); return hex.EncodeToString(s[:]) }
+
+func TestPutChecksTheAnnouncedHash(t *testing.T) {
+	root, _, do := newHandler(t, atomic, createDirs)
+	data := []byte("hello object")
+	w := do("PUT", "/a/ok", bytes.NewReader(data), hashHeader, shaOf(data))
+	if w.Code != http.StatusCreated || w.Header().Get(hashHeader) != shaOf(data) {
+		t.Fatalf("created: %d %v", w.Code, w.Header())
+	}
+	w = do("PUT", "/a/b", strings.NewReader("data"), hashHeader, shaOf([]byte("other")))
+	if w.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("code %d", w.Code)
+	}
+	if _, err := os.Stat(filepath.Join(root, "a/b")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("an object was placed: %v", err)
+	}
+	if n := tmpEntries(t, root); n != 0 {
+		t.Fatalf("%d leftovers in tmp", n)
+	}
+	if w := do("PUT", "/a/b", strings.NewReader("data"), hashHeader, "nothex"); w.Code != http.StatusBadRequest {
+		t.Fatalf("bad header: %d", w.Code)
+	}
+	// the announced hash may be in capitals, and a PUT without one is answered with the hash of what was written
+	if w := do("PUT", "/a/b", strings.NewReader("data"), hashHeader, strings.ToUpper(shaOf([]byte("data")))); w.Code != http.StatusCreated {
+		t.Fatalf("capitals: %d", w.Code)
+	}
+	if w := do("PUT", "/a/c", strings.NewReader("data")); w.Header().Get(hashHeader) != shaOf([]byte("data")) {
+		t.Fatalf("no hash in the answer: %v", w.Header())
 	}
 }

@@ -132,3 +132,6 @@ must exist (409 if not). A `PUT` with `Content-Range` is refused (501); WebDAV l
 `If-None-Match: *` makes an atomic `PUT` create-only: 412 Precondition Failed if the object exists. The check and the creation are one operation (a hard link), so of many
 writers of one name exactly one wins.
 
+A client that sends the SHA-256 of its body in `X-Content-SHA256` (64 hexadecimal digits) has it checked while the body is written; on a mismatch the answer is 422 and nothing
+is placed. The answer of an atomic `PUT` carries the SHA-256 of what was written in the same header.
+
