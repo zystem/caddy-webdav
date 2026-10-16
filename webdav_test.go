@@ -85,6 +85,27 @@ func TestWithoutCreateDirsAMissingParentIsRefused(t *testing.T) {
 	}
 }
 
+func TestCreateDirsMakesTheParentsOfADestination(t *testing.T) {
+	root, outside, do := newHandler(t, createDirs)
+	do("MKCOL", "/up/", nil)
+	do("PUT", "/up/c", strings.NewReader("chunk"))
+	if w := do("MOVE", "/up", nil, "Destination", "http://store/acme/r1/obj"); w.Code != http.StatusCreated {
+		t.Fatalf("move: %d", w.Code)
+	}
+	if got, err := os.ReadFile(filepath.Join(root, "acme/r1/obj/c")); err != nil || string(got) != "chunk" {
+		t.Fatalf("content: %v %q", err, got)
+	}
+	// a destination with a '..' makes nothing outside the root
+	do("MKCOL", "/up2/", nil)
+	do("MOVE", "/up2", nil, "Destination", "http://store/../../escape/obj")
+	entries, _ := os.ReadDir(outside)
+	for _, e := range entries {
+		if e.Name() != "root" {
+			t.Fatalf("%q was made outside the root", e.Name())
+		}
+	}
+}
+
 func TestCreateDirsNeverLeavesTheRoot(t *testing.T) {
 	_, outside, do := newHandler(t, createDirs)
 	for _, p := range []string{"/../../escape1/x.bin", "/a/../../../escape2/x.bin", "/./../escape3/x.bin", "//../escape4/x.bin"} {

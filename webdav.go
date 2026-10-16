@@ -205,6 +205,19 @@ func (wd WebDAV) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyhtt
 		}
 	}
 
+	if (r.Method == "MOVE" || r.Method == "COPY") && wd.CreateDirs {
+		// the parents of the destination are made as well, so that an object (a directory of chunks, for CiNim) can be put in place with one MOVE
+		if u, err := url.Parse(r.Header.Get("Destination")); err == nil && u.Path != "" {
+			if _, full, ok := resolve(root, prefix, u.Path); ok {
+				if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+					wd.logger.Error("failed to create the parent directories of a destination", zap.Error(err))
+					http.Error(w, "Failed to create directories", http.StatusInternalServerError)
+					return nil
+				}
+			}
+		}
+	}
+
 	wdHandler.ServeHTTP(w, r)
 
 	return nil
