@@ -149,3 +149,10 @@ webdav @hash {
 The hash is kept in the extended attribute `user.cinim.sha256` together with the size and the modification time of the file it was taken from, and is taken again when they
 differ (or when the file system has no extended attributes).
 
+
+
+## This fork
+
+The module path is `github.com/zystem/caddy-webdav`; build with `xcaddy build --with github.com/zystem/caddy-webdav@cinim-store`. The branch is the upstream plus the changes of
+the pull requests above (`create_dirs`, `atomic_put`, create-only `PUT`, `X-Content-SHA256`, `?sha256`), which CiNim's store nodes use. Its earlier unconditional "auto create dirs"
+is now the opt-in `create_dirs`.
