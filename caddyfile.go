@@ -15,6 +15,7 @@
 package webdav
 
 import (
+	"github.com/caddyserver/caddy/v2"
 	"github.com/caddyserver/caddy/v2/caddyconfig/caddyfile"
 	"github.com/caddyserver/caddy/v2/caddyconfig/httpcaddyfile"
 	"github.com/caddyserver/caddy/v2/modules/caddyhttp"
@@ -40,6 +41,10 @@ func parseWebdav(h httpcaddyfile.Helper) (caddyhttp.MiddlewareHandler, error) {
 //	    root <path>
 //	    prefix <path>
 //	    create_dirs
+//	    atomic_put
+//	    sync full|file|none
+//	    tmp_dir <name>
+//	    tmp_age <duration>
 //	}
 func (wd *WebDAV) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 	for d.Next() {
@@ -67,6 +72,27 @@ func (wd *WebDAV) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 				wd.Prefix = d.Val()
 			case "create_dirs":
 				wd.CreateDirs = true
+			case "atomic_put":
+				wd.AtomicPut = true
+			case "sync":
+				if !d.NextArg() {
+					return d.ArgErr()
+				}
+				wd.Sync = d.Val()
+			case "tmp_dir":
+				if !d.NextArg() {
+					return d.ArgErr()
+				}
+				wd.TmpDir = d.Val()
+			case "tmp_age":
+				if !d.NextArg() {
+					return d.ArgErr()
+				}
+				dur, err := caddy.ParseDuration(d.Val())
+				if err != nil {
+					return d.Errf("tmp_age: %v", err)
+				}
+				wd.TmpAge = caddy.Duration(dur)
 			default:
 				return d.Errf("unrecognized subdirective: %s", d.Val())
 			}

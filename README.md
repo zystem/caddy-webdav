@@ -113,3 +113,19 @@ webdav [<matcher>] {
 }
 ```
 
+## Atomic PUT
+
+```
+webdav [<matcher>] {
+    root /data
+    atomic_put
+    sync full        # full (the file and its directory are flushed; the default), file, none
+    tmp_dir .tmp     # unfinished writes; a path into it is not found, for every method
+    tmp_age 24h      # leftovers older than this are removed (at a PUT, at most once an hour)
+}
+```
+
+A `PUT` is written to a file in `tmp_dir` (in the root, so on the same file system), flushed, and renamed to the name of the object; then the directory is flushed. A crash or a
+client that goes away leaves a file in `tmp_dir`, never a part of an object under its name, and an object that was there stays whole. Without `create_dirs` the parent collection
+must exist (409 if not). A `PUT` with `Content-Range` is refused (501); WebDAV locks are not consulted by an atomic `PUT`.
+

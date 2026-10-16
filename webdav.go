@@ -20,10 +20,13 @@ package webdav
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io/fs"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/caddyserver/caddy/v2"
 	"github.com/caddyserver/caddy/v2/caddyconfig/caddyfile"
@@ -60,6 +63,19 @@ type WebDAV struct {
 	// collection does not exist, and that stays the default. The name of the object is cleaned as an absolute path first, so that a `..` cannot leave the root.
 	CreateDirs bool `json:"create_dirs,omitempty"`
 
+	// AtomicPut makes a PUT write to a file in TmpDir, flush it and rename it to the name of the object, so that a crash or a client that goes away never
+	// leaves a part of an object under its name (see put.go).
+	AtomicPut bool `json:"atomic_put,omitempty"`
+
+	// Sync is how much of an atomic PUT is flushed to the disk before it is answered: "full" (the file and its directory; the default), "file", or "none".
+	Sync string `json:"sync,omitempty"`
+
+	// TmpDir is the directory of the root for the writes that are not finished; nobody can reach it through this handler. The default is ".tmp".
+	TmpDir string `json:"tmp_dir,omitempty"`
+
+	// TmpAge is how old a file in TmpDir must be to be removed as the leftover of a write that never ended. The default is 24h.
+	TmpAge caddy.Duration `json:"tmp_age,omitempty"`
+
 	lockSystem webdav.LockSystem
 	logger     *zap.Logger
 }
@@ -75,6 +91,15 @@ func (WebDAV) CaddyModule() caddy.ModuleInfo {
 // Provision sets up the module.
 func (wd *WebDAV) Provision(ctx caddy.Context) error {
 	wd.logger = ctx.Logger(wd)
+
+	switch wd.Sync {
+	case "", syncFull, syncFile, syncNone:
+	default:
+		return fmt.Errorf("sync is full, file or none, not %q", wd.Sync)
+	}
+	if wd.TmpDir == "." || wd.TmpDir == ".." || strings.ContainsAny(wd.TmpDir, "/\\") {
+		return fmt.Errorf("tmp_dir is the name of one directory, not %q", wd.TmpDir)
+	}
 
 	wd.lockSystem = webdav.NewMemLS()
 	if wd.Root == "" {
@@ -145,7 +170,25 @@ func (wd WebDAV) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyhtt
 		w = emptyBodyResponseWriter{w}
 	}
 
-	if r.Method == http.MethodPut && wd.CreateDirs {
+	if rel, _, ok := resolve(root, prefix, r.URL.Path); ok && wd.AtomicPut && wd.insideTmp(rel) {
+		http.Error(w, "not found", http.StatusNotFound)
+		return nil
+	}
+	if wd.AtomicPut && r.Method == http.MethodPut {
+		wd.put(w, r, root, prefix)
+		return nil
+	}
+	if wd.AtomicPut && (r.Method == "MOVE" || r.Method == "COPY") {
+		// the destination of a MOVE or COPY is a path of the request as well
+		if u, err := url.Parse(r.Header.Get("Destination")); err == nil && u.Path != "" {
+			if rel, _, ok := resolve(root, prefix, u.Path); ok && wd.insideTmp(rel) {
+				http.Error(w, "not found", http.StatusNotFound)
+				return nil
+			}
+		}
+	}
+
+	if r.Method == http.MethodPut && wd.CreateDirs && !wd.AtomicPut {
 		if _, full, ok := resolve(root, prefix, r.URL.Path); ok {
 			if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
 				wd.logger.Error("failed to create the parent directories", zap.Error(err))
