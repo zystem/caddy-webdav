@@ -369,3 +369,36 @@ func TestSettings(t *testing.T) {
 		}
 	}
 }
+
+func TestCreateOnlyPutHasOneWinner(t *testing.T) {
+	root, _, do := newHandler(t, atomic, createDirs)
+	if w := do("PUT", "/once", strings.NewReader("first"), "If-None-Match", "*"); w.Code != http.StatusCreated {
+		t.Fatalf("first: %d", w.Code)
+	}
+	if w := do("PUT", "/once", strings.NewReader("second"), "If-None-Match", "*"); w.Code != http.StatusPreconditionFailed {
+		t.Fatalf("second: %d", w.Code)
+	}
+	if got, _ := os.ReadFile(filepath.Join(root, "once")); string(got) != "first" {
+		t.Fatalf("content %q", got)
+	}
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	codes := map[int]int{}
+	for i := 0; i < 20; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			w := do("PUT", "/race", strings.NewReader(strings.Repeat("x", 1000)), "If-None-Match", "*")
+			mu.Lock()
+			codes[w.Code]++
+			mu.Unlock()
+		}()
+	}
+	wg.Wait()
+	if codes[http.StatusCreated] != 1 || codes[http.StatusPreconditionFailed] != 19 {
+		t.Fatalf("racers: %v", codes)
+	}
+	if n := tmpEntries(t, root); n != 0 {
+		t.Fatalf("%d leftovers in tmp", n)
+	}
+}

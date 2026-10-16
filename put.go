@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"io"
+	"io/fs"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -19,6 +20,8 @@ import (
 // With `atomic_put` a PUT is written to a file in the `tmp_dir` directory of the root (the same file system), the file is flushed (`sync`) and renamed to the name of the object,
 // and the directory is flushed. A crash or a client that goes away leaves a file in `tmp_dir` (removed when it is older than `tmp_age`) and never a part of an object under its name.
 // A path that leads into `tmp_dir` is not found, for every method.
+//
+// `If-None-Match: *` makes the PUT create-only (412 when the object is there); the check and the creation are one operation (a hard link), not two.
 
 const (
 	syncFull = "full" // the file and then its directory are flushed before the answer: a write that was answered survives a power cut
@@ -140,6 +143,7 @@ func (wd *WebDAV) put(w http.ResponseWriter, r *http.Request, root, prefix strin
 		http.Error(w, "a PUT with Content-Range is not supported", http.StatusNotImplemented)
 		return
 	}
+	createOnly := strings.TrimSpace(r.Header.Get("If-None-Match")) == "*"
 	existed := false
 	if st, err := os.Lstat(full); err == nil {
 		if st.IsDir() {
@@ -147,6 +151,10 @@ func (wd *WebDAV) put(w http.ResponseWriter, r *http.Request, root, prefix strin
 			return
 		}
 		existed = true
+		if createOnly {
+			http.Error(w, "the object exists", http.StatusPreconditionFailed)
+			return
+		}
 	}
 
 	tmpDir := filepath.Join(filepath.Clean(root), wd.tmpDir())
@@ -216,7 +224,19 @@ func (wd *WebDAV) put(w http.ResponseWriter, r *http.Request, root, prefix strin
 		http.Error(w, "the parent collection does not exist", http.StatusConflict)
 		return
 	}
-	if err := os.Rename(tmp, full); err != nil {
+	if createOnly {
+		// the check and the creation in one step: a link fails if the name is taken
+		if err := os.Link(tmp, full); err != nil {
+			if errors.Is(err, fs.ErrExist) {
+				http.Error(w, "the object exists", http.StatusPreconditionFailed)
+			} else {
+				wd.logger.Error("cannot place an object", zap.Error(err))
+				http.Error(w, "storage error", http.StatusInternalServerError)
+			}
+			return
+		}
+		_ = os.Remove(tmp)
+	} else if err := os.Rename(tmp, full); err != nil {
 		if errors.Is(err, syscall.EISDIR) || errors.Is(err, syscall.ENOTEMPTY) {
 			http.Error(w, "the name is a collection", http.StatusConflict)
 		} else {

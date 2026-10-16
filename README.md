@@ -129,3 +129,6 @@ A `PUT` is written to a file in `tmp_dir` (in the root, so on the same file syst
 client that goes away leaves a file in `tmp_dir`, never a part of an object under its name, and an object that was there stays whole. Without `create_dirs` the parent collection
 must exist (409 if not). A `PUT` with `Content-Range` is refused (501); WebDAV locks are not consulted by an atomic `PUT`.
 
+`If-None-Match: *` makes an atomic `PUT` create-only: 412 Precondition Failed if the object exists. The check and the creation are one operation (a hard link), so of many
+writers of one name exactly one wins.
+
