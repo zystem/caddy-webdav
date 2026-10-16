@@ -154,5 +154,5 @@ differ (or when the file system has no extended attributes).
 ## This fork
 
 The module path is `github.com/zystem/caddy-webdav`; build with `xcaddy build --with github.com/zystem/caddy-webdav@cinim-store`. The branch is the upstream plus the changes of
-the pull requests above (`create_dirs`, `atomic_put`, create-only `PUT`, `X-Content-SHA256`, `?sha256`), which CiNim's store nodes use. Its earlier unconditional "auto create dirs"
+the sections above (`create_dirs`, `atomic_put`, create-only `PUT`, `X-Content-SHA256`, `?sha256`), which CiNim's store nodes use. Only `create_dirs` has been proposed upstream (#62); the atomic write is left to #60, and this fork keeps its own for what needs a module-level `PUT`. Its earlier unconditional "auto create dirs"
 is now the opt-in `create_dirs`.
