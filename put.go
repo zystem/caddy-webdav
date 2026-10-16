@@ -70,10 +70,28 @@ func (wd *WebDAV) tmpAge() time.Duration {
 	return time.Duration(wd.TmpAge)
 }
 
+// onFsyncDir is for the tests: it is told which directories are flushed
+var onFsyncDir func(dir string)
+
 func fsyncDir(dir string) {
+	if onFsyncDir != nil {
+		onFsyncDir(dir)
+	}
 	if d, err := os.Open(dir); err == nil {
 		_ = d.Sync()
 		_ = d.Close()
+	}
+}
+
+// fsyncChain flushes `dir` and every directory above it up to the root: the entry of a directory that was just made is in its parent, and the root's own entry in the share's directory
+// is not our business. A directory that was only entered needs `fsyncDir` of itself alone.
+func fsyncChain(root, dir string) {
+	root = filepath.Clean(root)
+	for d := filepath.Clean(dir); ; d = filepath.Dir(d) {
+		fsyncDir(d)
+		if d == root || d == "." || d == string(filepath.Separator) || d == filepath.Dir(d) {
+			return
+		}
 	}
 }
 
@@ -243,7 +261,11 @@ func (wd *WebDAV) put(w http.ResponseWriter, r *http.Request, root, prefix strin
 		return
 	}
 	dir := filepath.Dir(full)
+	madeDirs := false
 	if wd.CreateDirs {
+		if _, err := os.Stat(dir); err != nil {
+			madeDirs = true
+		}
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			if errors.Is(err, syscall.ENOTDIR) || errors.Is(err, syscall.EEXIST) {
 				http.Error(w, "a part of the name is an object", http.StatusConflict)
@@ -280,7 +302,11 @@ func (wd *WebDAV) put(w http.ResponseWriter, r *http.Request, root, prefix strin
 	}
 	done = true
 	if wd.syncMode() == syncFull {
-		fsyncDir(dir)
+		if madeDirs {
+			fsyncChain(root, dir)
+		} else {
+			fsyncDir(dir)
+		}
 	}
 	if st, err := os.Stat(full); err == nil {
 		storeHash(full, sum, st)

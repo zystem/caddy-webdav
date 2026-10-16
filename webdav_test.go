@@ -503,3 +503,99 @@ func TestTheHashIsKeptInAnAttributeWhenTheFileSystemHasThem(t *testing.T) {
 		t.Fatalf("attribute %q", v)
 	}
 }
+
+func recordFsyncs(t *testing.T) func() []string {
+	t.Helper()
+	var mu sync.Mutex
+	var got []string
+	onFsyncDir = func(dir string) {
+		mu.Lock()
+		got = append(got, dir)
+		mu.Unlock()
+	}
+	t.Cleanup(func() { onFsyncDir = nil })
+	return func() []string {
+		mu.Lock()
+		defer mu.Unlock()
+		out := got
+		got = nil
+		return out
+	}
+}
+
+func flushed(got []string, d string) bool {
+	for _, g := range got {
+		if g == d {
+			return true
+		}
+	}
+	return false
+}
+
+func TestSyncFullFlushesWhatAnAnsweredWriteNeeds(t *testing.T) {
+	root, _, do := newHandler(t, atomic, createDirs)
+	taken := recordFsyncs(t)
+	// a new deep path: the directory and every one above it up to the root, whose entries are new
+	if w := do("PUT", "/a/b/c/obj", strings.NewReader("x")); w.Code != http.StatusCreated {
+		t.Fatalf("put: %d", w.Code)
+	}
+	got := taken()
+	for _, d := range []string{filepath.Join(root, "a/b/c"), filepath.Join(root, "a/b"), filepath.Join(root, "a"), root} {
+		if !flushed(got, d) {
+			t.Fatalf("%s was not flushed; flushed: %v", d, got)
+		}
+	}
+	// an existing directory: that one only
+	do("PUT", "/a/b/c/obj2", strings.NewReader("y"))
+	if got := taken(); len(got) != 1 || got[0] != filepath.Join(root, "a/b/c") {
+		t.Fatalf("an existing directory: %v", got)
+	}
+}
+
+func TestSyncFullFlushesTheDirectoriesOfAMove(t *testing.T) {
+	root, _, do := newHandler(t, atomic, createDirs)
+	taken := recordFsyncs(t)
+	// the staging directory of an upload, as the first PUT of it makes it
+	if err := os.MkdirAll(filepath.Join(root, "up1"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "up1/.c0000000"), []byte("chunk"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	w := do("MOVE", "/up1", nil, "Destination", "http://store/acme/r1/obj~obj")
+	if w.Code != http.StatusCreated {
+		t.Fatalf("move: %d", w.Code)
+	}
+	got := taken()
+	for _, d := range []string{filepath.Join(root, "acme/r1"), filepath.Join(root, "acme"), root} {
+		if !flushed(got, d) {
+			t.Fatalf("%s was not flushed by the move; flushed: %v", d, got)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(root, "acme/r1/obj~obj/.c0000000")); err != nil {
+		t.Fatal("the object is not in place:", err)
+	}
+	// a move that fails flushes nothing and still answers its own status
+	if w := do("MOVE", "/no-such", nil, "Destination", "http://store/x/y"); w.Code < 400 {
+		t.Fatalf("a move of nothing: %d", w.Code)
+	}
+	if got := taken(); len(got) != 0 {
+		t.Fatalf("a failed move flushed %v", got)
+	}
+}
+
+func TestNoFlushWithoutSyncFull(t *testing.T) {
+	for _, mode := range []string{"file", "none"} {
+		root, _, do := newHandler(t, atomic, createDirs, func(w *WebDAV) { w.Sync = mode })
+		taken := recordFsyncs(t)
+		do("PUT", "/a/b/obj", strings.NewReader("x"))
+		_ = os.MkdirAll(filepath.Join(root, "up"), 0o755)
+		_ = os.WriteFile(filepath.Join(root, "up/c"), []byte("c"), 0o644)
+		if w := do("MOVE", "/up", nil, "Destination", "http://store/q/r"); w.Code != http.StatusCreated {
+			t.Fatalf("%s: move %d", mode, w.Code)
+		}
+		if got := taken(); len(got) != 0 {
+			t.Fatalf("sync %s flushed directories: %v", mode, got)
+		}
+	}
+}

@@ -205,16 +205,45 @@ func (wd WebDAV) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyhtt
 		}
 	}
 
-	if (r.Method == "MOVE" || r.Method == "COPY") && wd.CreateDirs {
-		// the parents of the destination are made as well, so that an object (a directory of chunks, for CiNim) can be put in place with one MOVE
+	if r.Method == "MOVE" || r.Method == "COPY" {
+		// The destination is a path of the request as well. Its parents are made when asked to (so that an object, a directory of chunks for CiNim, can be put in place with one MOVE),
+		// and with `sync full` the directories whose entries changed are flushed before the answer, so that an answered MOVE survives a power cut as the writes do.
+		var flush func()
 		if u, err := url.Parse(r.Header.Get("Destination")); err == nil && u.Path != "" {
 			if _, full, ok := resolve(root, prefix, u.Path); ok {
-				if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
-					wd.logger.Error("failed to create the parent directories of a destination", zap.Error(err))
-					http.Error(w, "Failed to create directories", http.StatusInternalServerError)
-					return nil
+				destDir := filepath.Dir(full)
+				_, statErr := os.Stat(destDir)
+				made := statErr != nil
+				if wd.CreateDirs {
+					if err := os.MkdirAll(destDir, 0o755); err != nil {
+						wd.logger.Error("failed to create the parent directories of a destination", zap.Error(err))
+						http.Error(w, "Failed to create directories", http.StatusInternalServerError)
+						return nil
+					}
+				}
+				if wd.AtomicPut && wd.syncMode() == syncFull {
+					_, srcFull, srcOK := resolve(root, prefix, r.URL.Path)
+					flush = func() {
+						if made && wd.CreateDirs {
+							fsyncChain(root, destDir)
+						} else {
+							fsyncDir(destDir)
+						}
+						if srcOK && r.Method == "MOVE" && filepath.Dir(srcFull) != destDir {
+							fsyncDir(filepath.Dir(srcFull))
+						}
+					}
 				}
 			}
+		}
+		if flush != nil {
+			dw := &deferredHeader{ResponseWriter: w}
+			wdHandler.ServeHTTP(dw, r)
+			if dw.code >= 200 && dw.code < 300 {
+				flush()
+			}
+			dw.release()
+			return nil
 		}
 	}
 
@@ -222,6 +251,37 @@ func (wd WebDAV) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyhtt
 
 	return nil
 }
+
+// deferredHeader holds back the status line of an answer until `release`, so that the directories a MOVE changed can be flushed before the client is told that it succeeded
+type deferredHeader struct {
+	http.ResponseWriter
+	code int
+	sent bool
+}
+
+func (d *deferredHeader) WriteHeader(code int) {
+	if d.code == 0 {
+		d.code = code
+	}
+}
+
+func (d *deferredHeader) Write(b []byte) (int, error) {
+	d.release()
+	return d.ResponseWriter.Write(b)
+}
+
+func (d *deferredHeader) release() {
+	if d.sent {
+		return
+	}
+	d.sent = true
+	if d.code == 0 {
+		d.code = http.StatusOK
+	}
+	d.ResponseWriter.WriteHeader(d.code)
+}
+
+func (d *deferredHeader) Unwrap() http.ResponseWriter { return d.ResponseWriter }
 
 // emptyBodyResponseWriter is a response writer that does not write a body.
 type emptyBodyResponseWriter struct{ http.ResponseWriter }
